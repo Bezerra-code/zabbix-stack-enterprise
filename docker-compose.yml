@@ -17,8 +17,12 @@ services:
       POSTGRES_DB: zabbix
       POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
       PGDATA: /var/lib/postgresql/data/pgdata
+      # Variáveis para script de inicialização
+      MONITORING_USER: ${MONITORING_USER:-monitoring}
+      MONITORING_PASSWORD: ${MONITORING_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
       - ./postgres/backups:/backups
     command: >
       postgres
@@ -295,7 +299,7 @@ services:
     ports:
       - "9187:9187"
     environment:
-      DATA_SOURCE_NAME: "postgresql://monitoring:Monitor2025@postgres:5432/zabbix?sslmode=disable"
+      DATA_SOURCE_NAME: "postgresql://${MONITORING_USER:-monitoring}:${MONITORING_PASSWORD}@postgres:5432/zabbix?sslmode=disable"
       PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
     depends_on:
       postgres:
