@@ -89,8 +89,11 @@ Stack completo de monitoramento enterprise com capacidade para **2.000-3.000 hos
 
 ```
 zabbix-stack/
-├── .env                          # Variáveis de ambiente
+├── .env                          # Variáveis de ambiente (NUNCA commitar!)
+├── .env.example                  # Template de configuração
+├── .gitignore                    # Arquivos ignorados pelo Git
 ├── docker-compose.yml            # Definição dos serviços
+├── README.md                     # Esta documentação
 │
 ├── grafana/                      # Configurações Grafana
 │   ├── dashboards/              # Dashboards JSON
@@ -103,6 +106,8 @@ zabbix-stack/
 │       └── datasources/         # Configuração de datasources
 │
 ├── postgres/                     # Configurações PostgreSQL
+│   ├── init/                    # Scripts de inicialização
+│   │   └── 01-create-monitoring-user.sh  # Cria usuário monitoring
 │   └── backups/                 # Backups do banco (gerados automaticamente)
 │
 ├── prometheus/                   # Configurações Prometheus
@@ -116,7 +121,7 @@ zabbix-stack/
     └── healthcheck.sh           # Verificação de saúde
 ```
 
-**Nota:** A pasta `zabbix/` foi removida pois continha apenas subpastas vazias não utilizadas pelo stack.
+**Nota:** A pasta `postgres/init/` contém scripts executados automaticamente na primeira inicialização do PostgreSQL.
 
 ---
 
@@ -208,7 +213,10 @@ Imagem: prometheuscommunity/postgres-exporter:latest
 Hostname: postgres-exporter
 Porta: 9187
 Função: Métricas do PostgreSQL
+Usuário: monitoring (read-only)
 ```
+
+**⚠️ Segurança:** Usa usuário `monitoring` com permissões somente-leitura, senha definida em variável de ambiente.
 
 ### cAdvisor
 ```yaml
@@ -224,20 +232,30 @@ Função: Métricas dos containers Docker
 
 ### Arquivo .env
 
-```bash
-# Domínio
-DOMAIN=suaempresa.com.br
+**⚠️ IMPORTANTE:** O arquivo `.env` contém **senhas sensíveis** e **NUNCA** deve ser commitado no Git!
 
-# Hostname do Zabbix Agent
+```bash
+# Stack de Monitoramento Enterprise
+DOMAIN=suaempresa.com.br
 HOSTNAME=zabbix-server-host
 
-# PostgreSQL
+# PostgreSQL - Usuário principal
 DB_USER=zabbix
-DB_PASSWORD=SenhaSuperSegura123
+DB_PASSWORD=SenhaSuperSegura123!@#
 
 # Grafana
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=Admin@Grafana2025
+
+# Postgres Exporter - Usuário read-only para métricas
+MONITORING_USER=monitoring
+MONITORING_PASSWORD=M0nit0r1ng!S3cur3@2025
+```
+
+**Gerar senhas fortes:**
+```bash
+# Gerar senha aleatória
+openssl rand -base64 32
 ```
 
 ### Primeiros Passos
@@ -251,30 +269,109 @@ cd ~/zabbix-stack
 2. **Criar pastas:**
 ```bash
 mkdir -p grafana/{dashboards,provisioning/{datasources,dashboards}}
-mkdir -p postgres/backups
+mkdir -p postgres/{init,backups}
 mkdir -p prometheus/alerts
 mkdir -p scripts
 ```
 
-3. **Criar arquivos de configuração:**
+3. **Criar arquivo .gitignore:**
 ```bash
-# .env, docker-compose.yml, prometheus.yml, alerts.yml
+nano .gitignore
+```
+
+Conteúdo:
+```gitignore
+# Senhas e configurações sensíveis (NUNCA commitar!)
+.env
+
+# Backups
+postgres/backups/*.sql
+postgres/backups/*.sql.gz
+postgres/backups/*.tar.gz
+
+# Volumes Docker
+*_data/
+
+# Logs
+*.log
+logs/
+
+# Temporários
+*.tmp
+*.swp
+*~
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+```
+
+4. **Criar .env baseado no .env.example:**
+```bash
+cp .env.example .env
+nano .env
+# Alterar TODAS as senhas!
+```
+
+5. **Criar script de inicialização do PostgreSQL:**
+```bash
+nano postgres/init/01-create-monitoring-user.sh
+```
+
+Conteúdo:
+```bash
+#!/bin/bash
+set -e
+
+echo "🔧 Criando usuário monitoring para Postgres Exporter..."
+
+if [ -z "$MONITORING_USER" ] || [ -z "$MONITORING_PASSWORD" ]; then
+    echo "❌ ERRO: Variáveis MONITORING_USER ou MONITORING_PASSWORD não definidas!"
+    exit 1
+fi
+
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+    DO \$\$
+    BEGIN
+        IF NOT EXISTS (SELECT FROM pg_user WHERE usename = '$MONITORING_USER') THEN
+            CREATE USER $MONITORING_USER WITH PASSWORD '$MONITORING_PASSWORD';
+        END IF;
+    END
+    \$\$;
+
+    GRANT pg_monitor TO $MONITORING_USER;
+    GRANT CONNECT ON DATABASE $POSTGRES_DB TO $MONITORING_USER;
+    GRANT USAGE ON SCHEMA public TO $MONITORING_USER;
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO $MONITORING_USER;
+    
+    SELECT 'CREATE DATABASE grafana' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'grafana')\gexec
+    GRANT CONNECT ON DATABASE grafana TO $MONITORING_USER;
+EOSQL
+
+echo "✅ Usuário $MONITORING_USER criado com sucesso!"
+```
+
+Dar permissão:
+```bash
+chmod +x postgres/init/01-create-monitoring-user.sh
+```
+
+6. **Criar arquivos de configuração:**
+```bash
+# prometheus.yml, alerts.yml, scripts
 # (usar os artefatos fornecidos)
 ```
 
-4. **Dar permissões:**
-```bash
-chmod +x scripts/*.sh
-chmod 755 postgres/backups
-chmod 755 grafana/provisioning
-```
-
-5. **Subir o stack:**
+7. **Subir o stack:**
 ```bash
 docker compose up -d
 ```
 
-6. **Verificar:**
+8. **Verificar:**
 ```bash
 docker compose ps
 ./scripts/healthcheck.sh
@@ -817,28 +914,92 @@ docker exec postgres-zabbix psql -U zabbix -d zabbix -c "
 
 ## 🔐 Segurança
 
+### ⚠️ CRÍTICO: Proteção de Senhas
+
+**NUNCA commite o arquivo `.env` no Git!**
+
+O `.env` contém todas as senhas do sistema e deve estar sempre no `.gitignore`.
+
+### Verificar Segurança Antes de Fazer Push
+
+```bash
+# 1. Verificar se .env está ignorado
+git check-ignore .env
+# Deve retornar: .env
+
+# 2. Verificar se não há senhas hardcoded
+grep -r "password.*=" --include="*.yml" --include="*.sh" . | grep -v "PASSWORD}" | grep -v ".env"
+# Deve retornar: VAZIO
+
+# 3. Ver o que será commitado
+git status
+# .env NÃO deve aparecer!
+
+# 4. Auditoria completa
+grep -r "Monitor2025\|SenhaSuperSegura\|Admin@Grafana" --exclude-dir=.git --exclude=".env" .
+# Deve retornar: VAZIO
+```
+
 ### Senhas e Credenciais
 
 **Armazenamento:**
-- Todas as senhas no arquivo `.env`
-- `.env` deve estar no `.gitignore`
-- Nunca commitar senhas no Git
+- ✅ Todas as senhas no arquivo `.env`
+- ✅ `.env` está no `.gitignore`
+- ✅ `.env.example` com placeholders (ALTERE_SENHA)
+- ❌ Nunca commitar senhas no Git
+- ❌ Nunca usar senhas hardcoded no código
 
-**Recomendações:**
+**Gerar senhas fortes:**
 ```bash
-# Gerar senha forte
+# Gerar senha aleatória forte
 openssl rand -base64 32
 
-# Alterar senha PostgreSQL
+# Ou usar pwgen (se instalado)
+pwgen -s 32 1
+```
+
+**Alterar senhas:**
+
+```bash
+# PostgreSQL (usuário zabbix)
 docker exec -it postgres-zabbix psql -U zabbix
 ALTER USER zabbix WITH PASSWORD 'nova_senha_forte';
+\q
 
-# Alterar senha Zabbix Admin
+# PostgreSQL (usuário monitoring)
+docker exec -it postgres-zabbix psql -U zabbix
+ALTER USER monitoring WITH PASSWORD 'nova_senha_forte';
+\q
+
+# Atualizar .env com as novas senhas
+nano .env
+
+# Reiniciar serviços afetados
+docker restart postgres-exporter zabbix-server
+
+# Zabbix Admin
 # Via web UI: Administration → Users → Admin → Change password
 
-# Alterar senha Grafana
+# Grafana
 docker exec grafana grafana-cli admin reset-admin-password nova_senha
 ```
+
+### Primeiro Acesso - Trocar Senhas Padrão
+
+**Após instalação, IMEDIATAMENTE trocar:**
+
+1. **Senha do Zabbix Admin:**
+   - Login: http://localhost:8080
+   - User: Admin / Password: zabbix
+   - **TROCAR** em: Administration → Users → Admin → Change password
+
+2. **Senha do Grafana:**
+   - Já definida no `.env` na primeira inicialização
+   - Não usa senha padrão
+
+3. **Senhas do PostgreSQL:**
+   - Já definidas no `.env` na primeira inicialização
+   - Não usa senhas padrão
 
 ### Firewall
 
@@ -1010,9 +1171,61 @@ PostgreSQL Replica (streaming replication)
 - ✅ PostgreSQL 16 Alpine otimizado
 - ✅ Prometheus + Exporters completos
 - ✅ 4 dashboards Grafana
-- ✅ Scripts de manutenção
-- ✅ Alertas configurados
+- ✅ Scripts de manutenção automatizados
+- ✅ Alertas Prometheus configurados
 - ✅ Documentação completa
+- ✅ Segurança: todas as senhas em variáveis de ambiente
+- ✅ Script de inicialização automática do PostgreSQL
+- ✅ Usuário monitoring read-only para métricas
+- ✅ .gitignore configurado para proteção de senhas
+- ✅ Hostnames configurados em todos os containers
+
+---
+
+## 🚀 Deploy e Git
+
+### Preparar para Git
+
+```bash
+# 1. Verificar se .gitignore existe
+cat .gitignore
+
+# 2. Verificar se .env está protegido
+git status | grep .env
+# NÃO deve aparecer!
+
+# 3. Inicializar Git
+git init
+git add .
+git commit -m "Initial commit: Stack Zabbix Enterprise"
+
+# 4. Criar repositório no GitHub (PRIVATE)
+# https://github.com/new
+
+# 5. Conectar e enviar
+git remote add origin https://github.com/SEU_USUARIO/zabbix-stack-enterprise.git
+git branch -M main
+git push -u origin main
+```
+
+### Clonar em Outro Servidor
+
+```bash
+# Clonar
+git clone https://github.com/SEU_USUARIO/zabbix-stack-enterprise.git
+cd zabbix-stack-enterprise
+
+# Criar .env a partir do exemplo
+cp .env.example .env
+nano .env
+# Configurar TODAS as senhas
+
+# Criar estrutura (se necessário)
+mkdir -p postgres/backups
+
+# Subir
+docker compose up -d
+```
 
 ---
 
