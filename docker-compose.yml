@@ -1,0 +1,338 @@
+services:
+  # ==========================================
+  # POSTGRESQL - Banco Otimizado
+  # ==========================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres-zabbix
+    hostname: postgres-zabbix
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${DB_USER:-zabbix}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: zabbix
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/backups:/backups
+    command: >
+      postgres
+      -c max_connections=300
+      -c shared_buffers=1GB
+      -c effective_cache_size=3GB
+      -c maintenance_work_mem=512MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=10MB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+      -c max_worker_processes=4
+      -c max_parallel_workers_per_gather=2
+      -c max_parallel_workers=4
+      -c autovacuum=on
+      -c autovacuum_max_workers=4
+      -c autovacuum_naptime=10s
+      -c log_min_duration_statement=1000
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabbix -d zabbix"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # ZABBIX SERVER
+  # ==========================================
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-7.4-latest
+    container_name: zabbix-server
+    hostname: zabbix-server
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "10051:10051"
+    environment:
+      DB_SERVER_HOST: postgres
+      DB_SERVER_PORT: 5432
+      POSTGRES_DB: zabbix
+      POSTGRES_USER: ${DB_USER:-zabbix}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      # Otimizações para alta carga
+      ZBX_STARTPOLLERS: 40
+      ZBX_STARTPOLLERSUNREACHABLE: 8
+      ZBX_STARTPINGERS: 8
+      ZBX_STARTTRAPPERS: 15
+      ZBX_STARTDISCOVERERS: 8
+      ZBX_STARTHTTPPOLLERS: 5
+      ZBX_STARTTIMERS: 2
+      ZBX_STARTESCALATORS: 2
+      ZBX_STARTALERTERS: 5
+      # Cache e performance
+      ZBX_CACHESIZE: 1G
+      ZBX_CACHEUPDATEFREQUENCY: 60
+      ZBX_STARTDBSYNCERS: 6
+      ZBX_HISTORYCACHESIZE: 512M
+      ZBX_HISTORYINDEXCACHESIZE: 256M
+      ZBX_TRENDCACHESIZE: 256M
+      ZBX_VALUECACHESIZE: 512M
+      # Timeouts
+      ZBX_TIMEOUT: 30
+      ZBX_UNREACHABLEPERIOD: 120
+      ZBX_UNAVAILABLEDELAY: 60
+      ZBX_UNREACHABLEDELAY: 15
+      # Logs
+      ZBX_DEBUGLEVEL: 3
+      ZBX_LOGSLOWQUERIES: 3000
+      # Housekeeping
+      ZBX_HOUSEKEEPINGFREQUENCY: 1
+      ZBX_MAXHOUSEKEEPERDELETE: 50000
+    volumes:
+      - ./zabbix/alertscripts:/usr/lib/zabbix/alertscripts:ro
+      - ./zabbix/externalscripts:/usr/lib/zabbix/externalscripts:ro
+      - ./zabbix/modules:/var/lib/zabbix/modules:ro
+      - ./zabbix/enc:/var/lib/zabbix/enc:ro
+      - ./zabbix/ssh_keys:/var/lib/zabbix/ssh_keys:ro
+      - ./zabbix/ssl/certs:/var/lib/zabbix/ssl/certs:ro
+      - ./zabbix/ssl/keys:/var/lib/zabbix/ssl/keys:ro
+      - ./zabbix/ssl/ca:/var/lib/zabbix/ssl/ca:ro
+      - ./zabbix/snmptraps:/var/lib/zabbix/snmptraps:ro
+      - ./zabbix/mibs:/var/lib/zabbix/mibs:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '2'
+          memory: 2G
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "zabbix_server", "-R", "config_cache_reload"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================
+  # ZABBIX WEB NGINX
+  # ==========================================
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest
+    container_name: zabbix-web
+    hostname: zabbix-web
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_PORT: 10051
+      DB_SERVER_HOST: postgres
+      DB_SERVER_PORT: 5432
+      POSTGRES_DB: zabbix
+      POSTGRES_USER: ${DB_USER:-zabbix}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      # PHP otimizações
+      PHP_TZ: America/Sao_Paulo
+      ZBX_MAXEXECUTIONTIME: 600
+      ZBX_MEMORYLIMIT: 256M
+      ZBX_POSTMAXSIZE: 32M
+      ZBX_UPLOADMAXFILESIZE: 8M
+      ZBX_MAXINPUTTIME: 600
+    volumes:
+      - ./zabbix/web/modules:/usr/share/zabbix/modules:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '1'
+          memory: 512M
+    depends_on:
+      - postgres
+      - zabbix-server
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================
+  # ZABBIX AGENT 2 - Monitoramento Local
+  # ==========================================
+  zabbix-agent:
+    image: zabbix/zabbix-agent2:alpine-7.4-latest
+    container_name: zabbix-agent
+    hostname: ${HOSTNAME:-zabbix-agent}
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "10050:10050"
+    environment:
+      ZBX_HOSTNAME: ${HOSTNAME:-zabbix-server}
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_PORT: 10051
+      ZBX_DEBUGLEVEL: 3
+      ZBX_TIMEOUT: 30
+    depends_on:
+      - zabbix-server
+
+  # ==========================================
+  # GRAFANA
+  # ==========================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    hostname: grafana
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "3000:3000"
+    environment:
+      # Admin
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      # Server
+      GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_SERVER_DOMAIN: localhost
+      GF_SERVER_HTTP_PORT: 3000
+      # Analytics
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Logs
+      GF_LOG_MODE: console
+      GF_LOG_LEVEL: info
+      # Plugins
+      GF_INSTALL_PLUGINS: alexanderzobnin-zabbix-app,grafana-piechart-panel,grafana-clock-panel
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: alexanderzobnin-zabbix-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - zabbix-server
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================
+  # PROMETHEUS - Métricas e Monitoramento
+  # ==========================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts:/etc/prometheus/alerts:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================
+  # NODE EXPORTER - Métricas do Sistema
+  # ==========================================
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    hostname: node-exporter
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "9100:9100"
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+
+  # ==========================================
+  # POSTGRES EXPORTER - Métricas do PostgreSQL
+  # ==========================================
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgres-exporter
+    hostname: postgres-exporter
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://monitoring:Monitor2025@postgres:5432/zabbix?sslmode=disable"
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ==========================================
+  # CADVISOR - Métricas dos Containers
+  # ==========================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    hostname: cadvisor
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "8081:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+
+networks:
+  monitoring:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres_data:
+    driver: local
+  grafana_data:
+    driver: local
+  prometheus_data:
+    driver: local

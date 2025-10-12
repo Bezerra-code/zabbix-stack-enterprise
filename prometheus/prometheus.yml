@@ -1,0 +1,73 @@
+# Arquivo: ./prometheus/prometheus.yml
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'zabbix-stack-monitor'
+    environment: 'production'
+
+# Alertmanager (opcional - para quando adicionar)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+# Regras de alerta
+rule_files:
+  - '/etc/prometheus/alerts/*.yml'
+
+scrape_configs:
+  # ==========================================
+  # Prometheus (self-monitoring)
+  # ==========================================
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # ==========================================
+  # Node Exporter - Métricas do Host
+  # ==========================================
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: 'node-exporter'
+          instance: 'zabbix-server'
+
+  # ==========================================
+  # PostgreSQL Exporter
+  # ==========================================
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+        labels:
+          service: 'postgresql'
+          database: 'zabbix'
+
+  # ==========================================
+  # cAdvisor - Métricas dos Containers
+  # ==========================================
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+        labels:
+          service: 'cadvisor'
+
+  # ==========================================
+  # Zabbix Server (se expor métricas)
+  # ==========================================
+  # - job_name: 'zabbix-server'
+  #   static_configs:
+  #     - targets: ['zabbix-server:10051']
+
+  # ==========================================
+  # Grafana
+  # ==========================================
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+        labels:
+          service: 'grafana'
