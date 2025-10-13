@@ -2,16 +2,20 @@
 
 ## 📋 Índice
 
-1. [Visão Geral](#visão-geral)
-2. [Arquitetura](#arquitetura)
-3. [Estrutura de Arquivos](#estrutura-de-arquivos)
-4. [Serviços](#serviços)
-5. [Configuração](#configuração)
-6. [Dashboards](#dashboards)
-7. [Manutenção](#manutenção)
-8. [Troubleshooting](#troubleshooting)
-9. [Backup e Restore](#backup-e-restore)
-10. [Monitoramento](#monitoramento)
+1. [Visão Geral](#-visão-geral)
+2. [Arquitetura](#️-arquitetura)
+3. [Estrutura de Arquivos](#-estrutura-de-arquivos)
+4. [Serviços](#️-serviços)
+5. [Configuração](#-configuração)
+6. [Dashboards](#-dashboards)
+7. [Manutenção](#-manutenção)
+8. [Troubleshooting](#-troubleshooting)
+9. [Backup e Restore](#-backup-e-restore)
+10. [Monitoramento](#-monitoramento)
+11. [Segurança](#-segurança)
+12. [Escalabilidade](#-escalabilidade)
+13. [Referências](#-referências)
+14. [Deploy e Git](#-deploy-e-git)
 
 ---
 
