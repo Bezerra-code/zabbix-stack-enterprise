@@ -1,18 +1,17 @@
 #!/bin/bash
-# Setup Wizard - Configuração Inicial do Stack Zabbix
-# Detecta automaticamente a infraestrutura e configura o ambiente
+# Setup Wizard - Stack Zabbix Enterprise
+# Instalação automática com verificação de dependências
 
 set -e
 
 # Cores
-GREEN='\033[0;32m'
 RED='\033[0;31m'
+GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
 NC='\033[0m'
 
+# Banner
 clear
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║                                                                ║"
@@ -22,483 +21,382 @@ echo "╚═══════════════════════�
 echo ""
 
 # ==========================================
-# VERIFICAR PRÉ-REQUISITOS
+# VERIFICAR E INSTALAR DOCKER
 # ==========================================
 echo -e "${BLUE}📋 Verificando pré-requisitos...${NC}"
 echo ""
 
-# Docker
-if command -v docker &> /dev/null; then
-    DOCKER_VERSION=$(docker --version | cut -d' ' -f3 | cut -d',' -f1)
-    echo -e "${GREEN}✓${NC} Docker instalado: v$DOCKER_VERSION"
-else
-    echo -e "${RED}✗${NC} Docker não encontrado!"
-    echo "   Instale: curl -fsSL https://get.docker.com | sh"
-    exit 1
-fi
-
-# Docker Compose
-if command -v docker compose &> /dev/null || command -v docker-compose &> /dev/null; then
-    echo -e "${GREEN}✓${NC} Docker Compose instalado"
-else
-    echo -e "${RED}✗${NC} Docker Compose não encontrado!"
-    exit 1
-fi
-
-echo ""
-
-# ==========================================
-# DETECTAR AMBIENTE
-# ==========================================
-echo -e "${BLUE}🔍 Detectando ambiente...${NC}"
-echo ""
-
-# Detectar sistema operacional
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        ENV_TYPE="wsl"
-        echo -e "Ambiente detectado: ${YELLOW}WSL (Windows Subsystem for Linux)${NC}"
+if ! command -v docker &> /dev/null; then
+    echo -e "${YELLOW}⚠️  Docker não encontrado!${NC}"
+    echo ""
+    read -p "Deseja instalar o Docker automaticamente? (s/N): " install_docker
+    
+    if [[ "$install_docker" =~ ^[Ss]$ ]]; then
+        echo ""
+        echo -e "${BLUE}📦 Instalando Docker...${NC}"
+        
+        # Instalar Docker
+        curl -fsSL https://get.docker.com | sh
+        
+        # Adicionar usuário ao grupo docker
+        echo ""
+        echo -e "${BLUE}👤 Adicionando usuário ao grupo docker...${NC}"
+        sudo usermod -aG docker $USER
+        
+        # Habilitar e iniciar Docker
+        echo -e "${BLUE}🔧 Habilitando serviço Docker...${NC}"
+        sudo systemctl enable docker
+        sudo systemctl start docker
+        
+        echo ""
+        echo -e "${GREEN}✓ Docker instalado com sucesso!${NC}"
+        echo -e "${YELLOW}⚠️  IMPORTANTE: Você precisa fazer LOGOUT/LOGIN para aplicar as permissões${NC}"
+        echo -e "${YELLOW}   Ou execute: newgrp docker${NC}"
+        echo ""
+        
+        # Executar newgrp automaticamente
+        echo -e "${BLUE}🔄 Aplicando permissões...${NC}"
+        exec sg docker "$0 $*"
     else
-        ENV_TYPE="linux"
-        echo -e "Ambiente detectado: ${GREEN}Linux Nativo${NC}"
+        echo ""
+        echo -e "${RED}❌ Docker é necessário para continuar!${NC}"
+        echo ""
+        echo "Instale manualmente:"
+        echo "  curl -fsSL https://get.docker.com | sh"
+        echo "  sudo usermod -aG docker \$USER"
+        echo "  newgrp docker"
+        echo ""
+        exit 1
     fi
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-    ENV_TYPE="macos"
-    echo -e "Ambiente detectado: ${CYAN}macOS${NC}"
 else
-    ENV_TYPE="unknown"
-    echo -e "Ambiente detectado: ${YELLOW}Desconhecido${NC}"
+    echo -e "${GREEN}✓ Docker encontrado: $(docker --version)${NC}"
+fi
+
+# Verificar se Docker está rodando
+if ! docker ps &> /dev/null; then
+    echo -e "${YELLOW}⚠️  Docker não está rodando ou você não tem permissões${NC}"
+    echo ""
+    echo "Tente:"
+    echo "  sudo systemctl start docker"
+    echo "  sudo usermod -aG docker \$USER"
+    echo "  newgrp docker"
+    echo ""
+    exit 1
+fi
+
+# ==========================================
+# VERIFICAR DOCKER COMPOSE
+# ==========================================
+if ! command -v docker compose &> /dev/null && ! command -v docker-compose &> /dev/null; then
+    echo -e "${YELLOW}⚠️  Docker Compose não encontrado!${NC}"
+    echo ""
+    read -p "Deseja instalar o Docker Compose automaticamente? (s/N): " install_compose
+    
+    if [[ "$install_compose" =~ ^[Ss]$ ]]; then
+        echo ""
+        echo -e "${BLUE}📦 Instalando Docker Compose...${NC}"
+        
+        # Docker Compose v2 já vem com o Docker moderno
+        # Mas vamos garantir instalação manual se necessário
+        COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)
+        
+        sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        sudo chmod +x /usr/local/bin/docker-compose
+        
+        echo -e "${GREEN}✓ Docker Compose instalado: $(docker-compose --version)${NC}"
+    else
+        echo -e "${RED}❌ Docker Compose é necessário para continuar!${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}✓ Docker Compose encontrado${NC}"
 fi
 
 echo ""
 
 # ==========================================
-# DETECTAR IPs DISPONÍVEIS
+# VERIFICAR ESTRUTURA DE PASTAS
 # ==========================================
-echo -e "${BLUE}🌐 Detectando endereços IP...${NC}"
+echo -e "${BLUE}📁 Verificando estrutura de pastas...${NC}"
 echo ""
 
-# Obter todos os IPs (exceto loopback)
-mapfile -t ALL_IPS < <(hostname -I 2>/dev/null || ip addr show | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | cut -d/ -f1)
+folders=(
+    "grafana/dashboards"
+    "grafana/provisioning/datasources"
+    "grafana/provisioning/dashboards"
+    "postgres/init"
+    "postgres/backups"
+    "prometheus/alerts"
+    "scripts"
+    "zabbix/alertscripts"
+    "zabbix/externalscripts"
+)
 
-if [ ${#ALL_IPS[@]} -eq 0 ]; then
-    echo -e "${RED}✗${NC} Nenhum IP detectado!"
-    ALL_IPS=("127.0.0.1")
-fi
-
-# Filtrar IPs relevantes
-PHYSICAL_IPS=()
-DOCKER_IPS=()
-WSL_IPS=()
-
-for ip in "${ALL_IPS[@]}"; do
-    if [[ $ip =~ ^172\.1[7-9]\. ]] || [[ $ip =~ ^172\.2[0-9]\. ]]; then
-        DOCKER_IPS+=("$ip")
-    elif [[ $ip =~ ^172\. ]]; then
-        WSL_IPS+=("$ip")
-    elif [[ $ip =~ ^192\.168\. ]] || [[ $ip =~ ^10\. ]] || [[ ! $ip =~ ^172\. ]]; then
-        PHYSICAL_IPS+=("$ip")
+for folder in "${folders[@]}"; do
+    if [ ! -d "$folder" ]; then
+        echo -e "${YELLOW}  → Criando: $folder${NC}"
+        mkdir -p "$folder"
+    else
+        echo -e "${GREEN}  ✓ $folder${NC}"
     fi
 done
 
-echo "IPs encontrados:"
 echo ""
-
-if [ ${#PHYSICAL_IPS[@]} -gt 0 ]; then
-    echo -e "${GREEN}IPs de Rede Física/Corporativa:${NC}"
-    for ip in "${PHYSICAL_IPS[@]}"; do
-        echo "  • $ip"
-    done
-    RECOMMENDED_IP="${PHYSICAL_IPS[0]}"
-fi
-
-if [ ${#WSL_IPS[@]} -gt 0 ]; then
-    echo -e "${YELLOW}IPs WSL/Virtual:${NC}"
-    for ip in "${WSL_IPS[@]}"; do
-        echo "  • $ip"
-    done
-    if [ -z "$RECOMMENDED_IP" ]; then
-        RECOMMENDED_IP="${WSL_IPS[0]}"
-    fi
-fi
-
-if [ ${#DOCKER_IPS[@]} -gt 0 ]; then
-    echo -e "${CYAN}IPs Docker (interno):${NC}"
-    for ip in "${DOCKER_IPS[@]}"; do
-        echo "  • $ip"
-    done
-fi
-
-echo ""
-
-if [ -z "$RECOMMENDED_IP" ]; then
-    RECOMMENDED_IP="${ALL_IPS[0]}"
-fi
 
 # ==========================================
-# MODO DE CONFIGURAÇÃO
+# FUNÇÃO: GERAR SENHA SEGURA PARA URLs
 # ==========================================
-echo -e "${MAGENTA}╔════════════════════════════════════════════════════════╗${NC}"
-echo -e "${MAGENTA}║  Escolha o modo de configuração:                       ║${NC}"
-echo -e "${MAGENTA}╚════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo "  1) 🚀 Rápido (Recomendado) - Detecção automática"
-echo "  2) ⚙️  Avançado - Configuração manual"
-echo "  3) 📦 Desenvolvimento - Apenas containers internos"
-echo ""
-read -p "Escolha [1-3]: " CONFIG_MODE
+generate_safe_password() {
+    # Gera senha de 32 caracteres sem caracteres problemáticos para URLs
+    # Evita: / @ : ? # [ ] % + = 
+    LC_ALL=C tr -dc 'A-Za-z0-9!*_-' < /dev/urandom | head -c 32
+}
 
-case $CONFIG_MODE in
-    1)
+# ==========================================
+# VERIFICAR ARQUIVO .env
+# ==========================================
+echo -e "${BLUE}🔐 Configurando variáveis de ambiente...${NC}"
+echo ""
+
+if [ ! -f .env ]; then
+    if [ -f .env.example ]; then
+        echo -e "${YELLOW}⚠️  Arquivo .env não encontrado!${NC}"
         echo ""
-        echo -e "${GREEN}✓${NC} Modo Rápido selecionado"
-        SETUP_MODE="auto"
-        ;;
-    2)
-        echo ""
-        echo -e "${CYAN}✓${NC} Modo Avançado selecionado"
-        SETUP_MODE="manual"
-        ;;
-    3)
-        echo ""
-        echo -e "${YELLOW}✓${NC} Modo Desenvolvimento selecionado"
-        SETUP_MODE="dev"
-        ;;
-    *)
-        echo -e "${RED}Opção inválida. Usando modo Rápido.${NC}"
-        SETUP_MODE="auto"
-        ;;
-esac
-
-echo ""
-
-# ==========================================
-# CONFIGURAÇÃO BASEADA NO MODO
-# ==========================================
-
-if [ "$SETUP_MODE" == "dev" ]; then
-    # Modo desenvolvimento - tudo localhost
-    SERVER_IP="127.0.0.1"
-    BIND_INTERFACE="127.0.0.1"
-    POSTGRES_EXTERNAL="no"
-    
-    echo -e "${YELLOW}Configuração de Desenvolvimento:${NC}"
-    echo "  • Acesso apenas localhost"
-    echo "  • Sem exposição externa"
-    echo "  • Ideal para testes locais"
-    echo ""
-
-elif [ "$SETUP_MODE" == "auto" ]; then
-    # Modo automático
-    SERVER_IP="$RECOMMENDED_IP"
-    BIND_INTERFACE="0.0.0.0"
-    POSTGRES_EXTERNAL="no"
-    
-    echo -e "${GREEN}Configuração Automática:${NC}"
-    echo "  • IP Detectado: $SERVER_IP"
-    echo "  • Bind: Todas interfaces (0.0.0.0)"
-    echo "  • PostgreSQL: Apenas interno"
-    echo ""
-    
-    read -p "Confirmar esta configuração? [S/n]: " confirm
-    if [[ "$confirm" =~ ^[Nn]$ ]]; then
-        SETUP_MODE="manual"
-        echo ""
-        echo -e "${CYAN}Alterando para modo manual...${NC}"
-        echo ""
-    fi
-fi
-
-if [ "$SETUP_MODE" == "manual" ]; then
-    # Modo manual
-    echo -e "${CYAN}=== Configuração Manual ===${NC}"
-    echo ""
-    
-    # IP do servidor
-    echo "IPs disponíveis:"
-    for i in "${!ALL_IPS[@]}"; do
-        echo "  $((i+1))) ${ALL_IPS[$i]}"
-    done
-    echo ""
-    read -p "Escolha o número ou digite um IP customizado [$RECOMMENDED_IP]: " ip_choice
-    
-    if [[ "$ip_choice" =~ ^[0-9]+$ ]] && [ "$ip_choice" -le "${#ALL_IPS[@]}" ]; then
-        SERVER_IP="${ALL_IPS[$((ip_choice-1))]}"
-    elif [ -n "$ip_choice" ]; then
-        SERVER_IP="$ip_choice"
-    else
-        SERVER_IP="$RECOMMENDED_IP"
-    fi
-    
-    echo ""
-    
-    # Bind interface
-    echo "Bind interface:"
-    echo "  1) 0.0.0.0 (Todas - Recomendado)"
-    echo "  2) 127.0.0.1 (Apenas local)"
-    echo "  3) $SERVER_IP (Apenas este IP)"
-    echo ""
-    read -p "Escolha [1-3] [1]: " bind_choice
-    
-    case $bind_choice in
-        2)
-            BIND_INTERFACE="127.0.0.1"
-            ;;
-        3)
-            BIND_INTERFACE="$SERVER_IP"
-            ;;
-        *)
-            BIND_INTERFACE="0.0.0.0"
-            ;;
-    esac
-    
-    echo ""
-    
-    # PostgreSQL externo
-    read -p "Expor PostgreSQL externamente? [y/N]: " postgres_ext
-    if [[ "$postgres_ext" =~ ^[Yy]$ ]]; then
-        POSTGRES_EXTERNAL="yes"
-    else
-        POSTGRES_EXTERNAL="no"
-    fi
-    
-    echo ""
-fi
+        read -p "Deseja criar .env com senhas geradas automaticamente? (s/N): " create_env
+        
+        if [[ "$create_env" =~ ^[Ss]$ ]]; then
+            echo ""
+            echo -e "${BLUE}🔐 Gerando senhas seguras...${NC}"
+            
+            # Gerar senhas seguras (compatíveis com URLs)
+            DB_PASSWORD=$(generate_safe_password)
+            GRAFANA_PASSWORD=$(generate_safe_password)
+            MONITORING_PASSWORD=$(generate_safe_password)
+            
+            # Pedir hostname
+            echo ""
+            read -p "Digite o hostname do servidor (ou pressione Enter para usar 'zabbix-server'): " HOSTNAME_INPUT
+            HOSTNAME=${HOSTNAME_INPUT:-zabbix-server}
+            
+            # Criar .env
+            cat > .env << EOF
+# Stack de Monitoramento Enterprise
+# Arquivo gerado automaticamente em $(date)
 
 # ==========================================
-# SENHAS
+# GERAL
 # ==========================================
-echo -e "${BLUE}🔐 Configuração de Senhas${NC}"
-echo ""
-
-read -p "Gerar senhas automaticamente? [S/n]: " auto_pass
-if [[ ! "$auto_pass" =~ ^[Nn]$ ]]; then
-    DB_PASSWORD=$(openssl rand -base64 24)
-    GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 24)
-    MONITORING_PASSWORD=$(openssl rand -base64 24)
-    
-    echo -e "${GREEN}✓${NC} Senhas geradas automaticamente"
-else
-    read -sp "Senha PostgreSQL: " DB_PASSWORD
-    echo ""
-    read -sp "Senha Grafana Admin: " GRAFANA_ADMIN_PASSWORD
-    echo ""
-    read -sp "Senha Monitoring: " MONITORING_PASSWORD
-    echo ""
-fi
-
-echo ""
+DOMAIN=localhost
+HOSTNAME=${HOSTNAME}
 
 # ==========================================
-# HOSTNAME E DOMÍNIO
+# POSTGRESQL
 # ==========================================
-DEFAULT_HOSTNAME=$(hostname -s)
-read -p "Hostname do servidor [$DEFAULT_HOSTNAME]: " HOSTNAME
-HOSTNAME=${HOSTNAME:-$DEFAULT_HOSTNAME}
-
-read -p "Domínio [empresa.local]: " DOMAIN
-DOMAIN=${DOMAIN:-empresa.local}
-
-echo ""
-
-# ==========================================
-# RESUMO DA CONFIGURAÇÃO
-# ==========================================
-echo -e "${MAGENTA}╔════════════════════════════════════════════════════════╗${NC}"
-echo -e "${MAGENTA}║  📋 RESUMO DA CONFIGURAÇÃO                             ║${NC}"
-echo -e "${MAGENTA}╚════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "${CYAN}Servidor:${NC}"
-echo "  Hostname: $HOSTNAME"
-echo "  Domínio: $DOMAIN"
-echo "  IP: $SERVER_IP"
-echo ""
-echo -e "${CYAN}Rede:${NC}"
-echo "  Bind Interface: $BIND_INTERFACE"
-echo "  PostgreSQL Externo: $POSTGRES_EXTERNAL"
-echo ""
-echo -e "${CYAN}Acessos:${NC}"
-echo "  Zabbix Web: http://$SERVER_IP:8080"
-echo "  Grafana: http://$SERVER_IP:3000"
-echo "  Prometheus: http://$SERVER_IP:9090"
-echo ""
-echo -e "${CYAN}Agents Externos:${NC}"
-echo "  Configurar Server=$SERVER_IP no agent"
-echo ""
-
-read -p "Confirmar e criar ambiente? [S/n]: " final_confirm
-if [[ "$final_confirm" =~ ^[Nn]$ ]]; then
-    echo -e "${YELLOW}Setup cancelado.${NC}"
-    exit 0
-fi
-
-echo ""
-
-# ==========================================
-# CRIAR .ENV
-# ==========================================
-echo -e "${BLUE}📝 Criando arquivo .env...${NC}"
-
-cat > .env <<EOF
-# ==========================================
-# STACK ZABBIX ENTERPRISE - Configuração
-# Gerado automaticamente em: $(date)
-# ==========================================
-
-# Identificação
-HOSTNAME=$HOSTNAME
-DOMAIN=$DOMAIN
-
-# Rede
-SERVER_IP=$SERVER_IP
-BIND_INTERFACE=$BIND_INTERFACE
-ZABBIX_SERVER_PORT=10051
-ZABBIX_WEB_PORT=8080
-GRAFANA_PORT=3000
-PROMETHEUS_PORT=9090
-DOCKER_SUBNET=172.20.0.0/16
-
-# PostgreSQL
 DB_USER=zabbix
-DB_PASSWORD=$DB_PASSWORD
-POSTGRES_EXTERNAL=$POSTGRES_EXTERNAL
+DB_PASSWORD=${DB_PASSWORD}
 
-# Grafana
+# ==========================================
+# GRAFANA
+# ==========================================
 GRAFANA_ADMIN_USER=admin
-GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD
+GRAFANA_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
 
-# Monitoring
+# ==========================================
+# POSTGRES EXPORTER (Monitoramento)
+# ==========================================
 MONITORING_USER=monitoring
-MONITORING_PASSWORD=$MONITORING_PASSWORD
-
-# Ambiente
-ENVIRONMENT=production
-TZ=America/Sao_Paulo
+MONITORING_PASSWORD=${MONITORING_PASSWORD}
 EOF
+            
+            echo -e "${GREEN}✓ Arquivo .env criado com senhas seguras!${NC}"
+            echo ""
+            echo -e "${YELLOW}📝 IMPORTANTE: Anote as senhas abaixo (ou salve o arquivo .env)${NC}"
+            echo ""
+            echo "╔════════════════════════════════════════════════════════════════╗"
+            echo "║                    CREDENCIAIS GERADAS                         ║"
+            echo "╚════════════════════════════════════════════════════════════════╝"
+            echo ""
+            echo "PostgreSQL:"
+            echo "  Usuário: zabbix"
+            echo "  Senha: ${DB_PASSWORD}"
+            echo ""
+            echo "Grafana (http://localhost:3000):"
+            echo "  Usuário: admin"
+            echo "  Senha: ${GRAFANA_PASSWORD}"
+            echo ""
+            echo "Zabbix Web (http://localhost:8080):"
+            echo "  Usuário: Admin"
+            echo "  Senha: zabbix (altere após primeiro login!)"
+            echo ""
+            echo "Monitoring User (interno):"
+            echo "  Usuário: monitoring"
+            echo "  Senha: ${MONITORING_PASSWORD}"
+            echo ""
+            echo "╚════════════════════════════════════════════════════════════════╝"
+            echo ""
+            
+            read -p "Pressione Enter para continuar..."
+            
+        else
+            echo ""
+            echo -e "${YELLOW}📝 Criando .env manualmente...${NC}"
+            cp .env.example .env
+            echo -e "${GREEN}✓ Arquivo .env criado!${NC}"
+            echo ""
+            echo -e "${YELLOW}⚠️  IMPORTANTE: Edite o arquivo .env e altere TODAS as senhas!${NC}"
+            echo ""
+            read -p "Deseja editar o .env agora? (s/N): " edit_env
+            
+            if [[ "$edit_env" =~ ^[Ss]$ ]]; then
+                ${EDITOR:-nano} .env
+            else
+                echo ""
+                echo -e "${RED}⚠️  LEMBRE-SE: Edite o .env antes de subir o stack!${NC}"
+                echo "  nano .env"
+                echo ""
+            fi
+        fi
+    else
+        echo -e "${RED}❌ Arquivo .env.example não encontrado!${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}✓ Arquivo .env encontrado${NC}"
+    
+    # Verificar se senhas foram alteradas
+    if grep -q "ALTERE_ESTA_SENHA" .env || grep -q "ALTERE_SENHA" .env; then
+        echo -e "${RED}⚠️  ATENÇÃO: Senhas padrão detectadas no .env!${NC}"
+        echo ""
+        read -p "Deseja gerar novas senhas automaticamente? (s/N): " regen_pass
+        
+        if [[ "$regen_pass" =~ ^[Ss]$ ]]; then
+            echo ""
+            echo -e "${BLUE}🔐 Gerando novas senhas...${NC}"
+            
+            # Backup do .env atual
+            cp .env .env.backup
+            
+            # Gerar novas senhas
+            DB_PASSWORD=$(generate_safe_password)
+            GRAFANA_PASSWORD=$(generate_safe_password)
+            MONITORING_PASSWORD=$(generate_safe_password)
+            
+            # Atualizar .env
+            sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${DB_PASSWORD}/" .env
+            sed -i "s/GRAFANA_ADMIN_PASSWORD=.*/GRAFANA_ADMIN_PASSWORD=${GRAFANA_PASSWORD}/" .env
+            sed -i "s/MONITORING_PASSWORD=.*/MONITORING_PASSWORD=${MONITORING_PASSWORD}/" .env
+            
+            echo -e "${GREEN}✓ Senhas atualizadas!${NC}"
+            echo ""
+            echo "Backup salvo em: .env.backup"
+            echo ""
+        else
+            read -p "Deseja editar o .env manualmente? (s/N): " edit_env
+            
+            if [[ "$edit_env" =~ ^[Ss]$ ]]; then
+                ${EDITOR:-nano} .env
+            fi
+        fi
+    fi
+fi
 
-echo -e "${GREEN}✓${NC} Arquivo .env criado"
 echo ""
 
 # ==========================================
-# CRIAR ESTRUTURA DE PASTAS
+# VERIFICAR PERMISSÕES DOS SCRIPTS
 # ==========================================
-echo -e "${BLUE}📁 Criando estrutura de pastas...${NC}"
-
-mkdir -p grafana/dashboards
-mkdir -p grafana/provisioning/{datasources,dashboards}
-mkdir -p postgres/{init,backups}
-mkdir -p prometheus/alerts
-mkdir -p scripts
-mkdir -p zabbix/{alertscripts,externalscripts,modules,enc,ssh_keys,ssl/{certs,keys,ca},snmptraps,mibs}
-
-chmod +x postgres/init/*.sh 2>/dev/null || true
-chmod +x scripts/*.sh 2>/dev/null || true
-
-echo -e "${GREEN}✓${NC} Estrutura criada"
+echo -e "${BLUE}🔧 Configurando permissões...${NC}"
 echo ""
 
-# ==========================================
-# CRIAR ARQUIVO DE CONFIGURAÇÃO DOS AGENTS
-# ==========================================
-echo -e "${BLUE}📋 Criando templates de configuração dos agents...${NC}"
+scripts=(
+    "postgres/init/01-create-monitoring-user.sh"
+    "scripts/backup.sh"
+    "scripts/healthcheck.sh"
+    "scripts/cleanup.sh"
+)
 
-# Linux Agent Config
-cat > agent-config-linux.conf <<EOF
-# Configuração para Zabbix Agent 2 - Linux
-# Copie este arquivo para /etc/zabbix/zabbix_agent2.conf no host monitorado
+for script in "${scripts[@]}"; do
+    if [ -f "$script" ]; then
+        chmod +x "$script"
+        echo -e "${GREEN}  ✓ $script${NC}"
+    fi
+done
 
-Server=$SERVER_IP
-ServerActive=$SERVER_IP
-Hostname=ALTERE_PARA_NOME_UNICO
-ListenPort=10050
-ListenIP=0.0.0.0
-LogFile=/var/log/zabbix/zabbix_agent2.log
-DebugLevel=3
-Timeout=30
-EOF
-
-# Windows Agent Config
-cat > agent-config-windows.conf <<EOF
-# Configuração para Zabbix Agent 2 - Windows
-# Copie este conteúdo para C:\Program Files\Zabbix Agent 2\zabbix_agent2.conf
-
-Server=$SERVER_IP
-ServerActive=$SERVER_IP
-Hostname=ALTERE_PARA_NOME_UNICO
-ListenPort=10050
-LogFile=C:\Program Files\Zabbix Agent 2\zabbix_agent2.log
-DebugLevel=3
-Timeout=30
-EOF
-
-echo -e "${GREEN}✓${NC} Templates criados:"
-echo "  • agent-config-linux.conf"
-echo "  • agent-config-windows.conf"
 echo ""
 
 # ==========================================
 # INICIAR STACK
 # ==========================================
-echo -e "${MAGENTA}╔════════════════════════════════════════════════════════╗${NC}"
-echo -e "${MAGENTA}║  🚀 INICIANDO STACK                                    ║${NC}"
-echo -e "${MAGENTA}╚════════════════════════════════════════════════════════╝${NC}"
+echo "╔════════════════════════════════════════════════════════════════╗"
+echo "║                    PRONTO PARA INICIAR!                        ║"
+echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
+echo -e "${GREEN}✅ Todos os pré-requisitos verificados!${NC}"
+echo ""
+echo "O que você deseja fazer?"
+echo ""
+echo "  1) Subir o stack completo"
+echo "  2) Apenas verificar configuração (docker compose config)"
+echo "  3) Sair (subir manualmente depois)"
+echo ""
+read -p "Escolha uma opção (1-3): " option
 
-read -p "Iniciar containers agora? [S/n]: " start_now
-if [[ ! "$start_now" =~ ^[Nn]$ ]]; then
-    echo ""
-    echo "Iniciando containers..."
-    docker compose up -d
-    
-    echo ""
-    echo "Aguardando inicialização (30 segundos)..."
-    sleep 30
-    
-    # Executar healthcheck se existir
-    if [ -f "./scripts/healthcheck.sh" ]; then
+case $option in
+    1)
         echo ""
-        ./scripts/healthcheck.sh
-    fi
-fi
-
-echo ""
-
-# ==========================================
-# INFORMAÇÕES FINAIS
-# ==========================================
-echo -e "${GREEN}╔════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  ✅ SETUP CONCLUÍDO COM SUCESSO!                       ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "${CYAN}📊 Acessos:${NC}"
-echo "  Zabbix Web: http://$SERVER_IP:8080"
-echo "    Usuário: Admin"
-echo "    Senha: zabbix (ALTERE IMEDIATAMENTE!)"
-echo ""
-echo "  Grafana: http://$SERVER_IP:3000"
-echo "    Usuário: admin"
-echo "    Senha: (verificar em .env)"
-echo ""
-echo -e "${CYAN}🔧 Configurar Agents:${NC}"
-echo "  Use os arquivos gerados:"
-echo "    • agent-config-linux.conf"
-echo "    • agent-config-windows.conf"
-echo ""
-echo -e "${CYAN}📝 Próximos Passos:${NC}"
-echo "  1. Acessar Zabbix Web e TROCAR senha padrão"
-echo "  2. Instalar agents nos hosts a monitorar"
-echo "  3. Adicionar hosts no Zabbix Web"
-echo "  4. Configurar datasource Zabbix no Grafana"
-echo "  5. Importar dashboards do Grafana"
-echo ""
-echo -e "${YELLOW}⚠️  Importante:${NC}"
-echo "  • Senhas salvas em .env (NÃO commitar no Git!)"
-echo "  • Documentação completa em README.md"
-echo "  • Backup automático: ./scripts/backup.sh"
-echo ""
-echo -e "${BLUE}Para gerenciar o stack:${NC}"
-echo "  docker compose ps           # Ver status"
-echo "  docker compose logs -f      # Ver logs"
-echo "  docker compose restart      # Reiniciar"
-echo "  docker compose down         # Parar tudo"
-echo ""
+        echo -e "${BLUE}🚀 Subindo o stack...${NC}"
+        echo ""
+        docker compose up -d
+        echo ""
+        echo "╔════════════════════════════════════════════════════════════════╗"
+        echo "║                    ✅ STACK INICIADO!                          ║"
+        echo "╚════════════════════════════════════════════════════════════════╝"
+        echo ""
+        echo "Aguarde ~30 segundos para inicialização completa..."
+        sleep 5
+        echo ""
+        echo "📊 Status dos containers:"
+        docker compose ps
+        echo ""
+        echo "🌐 Acessos:"
+        echo "  • Zabbix Web:  http://localhost:8080"
+        echo "    User: Admin | Pass: zabbix"
+        echo ""
+        echo "  • Grafana:     http://localhost:3000"
+        echo "    User: admin | Pass: (veja .env)"
+        echo ""
+        echo "  • Prometheus:  http://localhost:9090"
+        echo ""
+        echo "📝 Para verificar saúde do stack:"
+        echo "  ./scripts/healthcheck.sh"
+        echo ""
+        ;;
+    2)
+        echo ""
+        echo -e "${BLUE}🔍 Verificando configuração...${NC}"
+        echo ""
+        docker compose config
+        echo ""
+        echo -e "${GREEN}✓ Configuração válida!${NC}"
+        echo ""
+        echo "Para subir o stack:"
+        echo "  docker compose up -d"
+        echo ""
+        ;;
+    3)
+        echo ""
+        echo -e "${BLUE}👋 Setup concluído!${NC}"
+        echo ""
+        echo "Para subir o stack manualmente:"
+        echo "  docker compose up -d"
+        echo ""
+        echo "Para verificar saúde:"
+        echo "  ./scripts/healthcheck.sh"
+        echo ""
+        ;;
+    *)
+        echo ""
+        echo -e "${RED}Opção inválida!${NC}"
+        echo ""
+        ;;
+esac

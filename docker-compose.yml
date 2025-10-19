@@ -186,14 +186,14 @@ services:
   zabbix-agent:
     image: zabbix/zabbix-agent2:alpine-7.4-latest
     container_name: zabbix-agent
-    hostname: ${HOSTNAME:-zabbix-agent}
+    hostname: zabbix-agent
     restart: unless-stopped
     networks:
       - monitoring
     ports:
-      - "${BIND_INTERFACE:-0.0.0.0}:10060:10050"
+      - "10050:10050"
     environment:
-      ZBX_HOSTNAME: ${HOSTNAME:-zabbix-server}
+      ZBX_HOSTNAME: zabbix-agent
       ZBX_SERVER_HOST: zabbix-server
       ZBX_SERVER_PORT: 10051
       ZBX_DEBUGLEVEL: 3
